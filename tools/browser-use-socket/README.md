@@ -41,7 +41,22 @@ Verified locally on 2026-05-24:
 - Chrome profile name: `Codex`
 
 By default, extension-backed operations refuse to run unless the active Chrome
-profile in Chrome `Local State` is named `Codex`.
+extension installation resolves to exactly one Chrome profile and that profile
+is named `Codex`.
+
+The enforcement is intentionally strict:
+
+- if the Codex extension is not installed in any Chrome profile, extension
+  backend operations fail
+- if the Codex extension is installed in more than one Chrome profile,
+  extension backend operations fail
+- if the Codex extension is installed in exactly one profile but that profile
+  is not named `Codex`, extension backend operations fail
+
+This matches what the backend socket can actually prove. The socket exposes a
+single extension backend, and Chrome extension state is profile-scoped, so this
+tool now keys off the extension installation scope instead of Chrome's global
+`last_used` profile.
 
 Override only when explicitly intended:
 

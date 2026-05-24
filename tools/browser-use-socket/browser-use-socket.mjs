@@ -12,6 +12,7 @@ const TOOL_VERSION = 1;
 const DEFAULT_SOCKET_DIR = "/tmp/codex-browser-use";
 const DEFAULT_TIMEOUT_MS = 2000;
 const DEFAULT_ALLOWED_CHROME_PROFILE_NAME = "Codex";
+const DEFAULT_CODEX_EXTENSION_ID = "hehggadaopoacecdllhhajmbjkdcmajg";
 const TOOL_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_ROOT = path.resolve(TOOL_DIR, "../..");
 const DEFAULT_USAGE_LOG_PATH = path.join(
@@ -787,6 +788,18 @@ export async function readChromeLocalProfiles() {
   }));
 }
 
+export async function listChromeProfileDirs() {
+  const profiles = await readChromeLocalProfiles();
+  const chromeRoot = path.join(
+    os.homedir(),
+    "Library/Application Support/Google/Chrome"
+  );
+  return profiles.map((profile) => ({
+    ...profile,
+    path: path.join(chromeRoot, profile.id)
+  }));
+}
+
 export function getAllowedChromeProfileName() {
   const globalOverride = globalThis.BROWSER_USE_SOCKET_ALLOWED_CHROME_PROFILE;
   if (typeof globalOverride === "string" && globalOverride.trim().length > 0) {
@@ -811,18 +824,66 @@ export async function getActiveChromeProfile() {
   return profiles.find((profile) => profile.lastUsed) ?? null;
 }
 
+export async function findProfilesWithExtensionInstalled(
+  extensionId = DEFAULT_CODEX_EXTENSION_ID
+) {
+  const profiles = await listChromeProfileDirs();
+  const matches = [];
+
+  for (const profile of profiles) {
+    const localSettingsDir = path.join(
+      profile.path,
+      "Local Extension Settings",
+      extensionId
+    );
+    const securePreferencesPath = path.join(profile.path, "Secure Preferences");
+
+    let hasLocalSettings = false;
+    let securePreferencesHasExtension = false;
+
+    try {
+      const stat = await fs.stat(localSettingsDir);
+      hasLocalSettings = stat.isDirectory();
+    } catch {}
+
+    try {
+      const raw = await fs.readFile(securePreferencesPath, "utf8");
+      const data = JSON.parse(raw);
+      securePreferencesHasExtension = Boolean(
+        data?.extensions?.settings?.[extensionId]
+      );
+    } catch {}
+
+    if (hasLocalSettings || securePreferencesHasExtension) {
+      matches.push({
+        ...profile,
+        hasLocalSettings,
+        securePreferencesHasExtension
+      });
+    }
+  }
+
+  return matches;
+}
+
 export async function assertAllowedChromeProfileContext() {
   const allowedName = getAllowedChromeProfileName();
-  const active = await getActiveChromeProfile();
-  if (!active) {
-    throw new Error("Could not determine the active Chrome profile");
+  const profiles = await findProfilesWithExtensionInstalled();
+  if (profiles.length === 0) {
+    throw new Error("Could not find the Codex Chrome extension in any Chrome profile");
   }
-  if (active.name !== allowedName) {
+  if (profiles.length > 1) {
     throw new Error(
-      `Refusing Chrome backend operation because the active Chrome profile is "${active.name ?? active.id}" and the allowed profile is "${allowedName}"`
+      `Refusing Chrome backend operation because the Codex extension is installed in multiple Chrome profiles: ${profiles.map((profile) => profile.name ?? profile.id).join(", ")}`
     );
   }
-  return active;
+  const [installedProfile] = profiles;
+  if (installedProfile.name !== allowedName) {
+    throw new Error(
+      `Refusing Chrome backend operation because the Codex extension is installed in "${installedProfile.name ?? installedProfile.id}" and the allowed profile is "${allowedName}"`
+    );
+  }
+  return installedProfile;
 }
 
 export async function assertSocketAllowed(socketPath, timeoutMs = DEFAULT_TIMEOUT_MS) {
