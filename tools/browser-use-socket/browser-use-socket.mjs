@@ -252,6 +252,20 @@ export async function attachTab(socketPath, tabId, parsedOrSession = {}, timeout
   await assertSocketAllowed(socketPath, timeoutMs);
   const params = normalizeSessionMeta(parsedOrSession);
   await rpc(socketPath, "attach", { ...params, tabId }, timeoutMs);
+  return {
+    status: "attached",
+    tabId
+  };
+}
+
+export async function detachTab(socketPath, tabId, parsedOrSession = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  await assertSocketAllowed(socketPath, timeoutMs);
+  const params = normalizeSessionMeta(parsedOrSession);
+  await rpc(socketPath, "detach", { ...params, tabId }, timeoutMs);
+  return {
+    status: "detached",
+    tabId
+  };
 }
 
 export async function cdpCommand(
@@ -297,6 +311,17 @@ export async function evaluateInTab(
   );
 }
 
+export async function evaluateValueInTab(
+  socketPath,
+  tabId,
+  expression,
+  parsedOrSession = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS
+) {
+  const raw = await evaluateInTab(socketPath, tabId, expression, parsedOrSession, timeoutMs);
+  return unwrapEvaluationResult(raw);
+}
+
 export async function clickSelector(
   socketPath,
   tabId,
@@ -310,10 +335,10 @@ export async function clickSelector(
       if (!el) return { ok: false, error: "not-found" };
       el.scrollIntoView({ block: "center", inline: "center" });
       el.click();
-      return { ok: true };
+      return { ok: true, selector: ${JSON.stringify(selector)} };
     })()
   `;
-  return await evaluateInTab(socketPath, tabId, expression, parsedOrSession, timeoutMs);
+  return await evaluateValueInTab(socketPath, tabId, expression, parsedOrSession, timeoutMs);
 }
 
 export async function fillSelector(
@@ -339,7 +364,7 @@ export async function fillSelector(
       return { ok: true, value: el.value ?? null };
     })()
   `;
-  return await evaluateInTab(socketPath, tabId, expression, parsedOrSession, timeoutMs);
+  return await evaluateValueInTab(socketPath, tabId, expression, parsedOrSession, timeoutMs);
 }
 
 export async function navigateClaimedTab(
@@ -349,7 +374,7 @@ export async function navigateClaimedTab(
   parsedOrSession = {},
   timeoutMs = DEFAULT_TIMEOUT_MS
 ) {
-  return await cdpCommand(
+  const result = await cdpCommand(
     socketPath,
     tabId,
     "Page.navigate",
@@ -357,6 +382,216 @@ export async function navigateClaimedTab(
     parsedOrSession,
     timeoutMs
   );
+  return {
+    ok: true,
+    tabId,
+    url,
+    result
+  };
+}
+
+export async function waitForUrlContains(
+  socketPath,
+  tabId,
+  needle,
+  parsedOrSession = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS
+) {
+  return await waitForCondition(
+    async () => {
+      const currentUrl = await evaluateValueInTab(
+        socketPath,
+        tabId,
+        "window.location.href",
+        parsedOrSession,
+        timeoutMs
+      );
+      return {
+        matched: typeof currentUrl === "string" && currentUrl.includes(needle),
+        value: currentUrl
+      };
+    },
+    {
+      timeoutMs,
+      description: `URL containing ${needle}`
+    }
+  );
+}
+
+export async function waitForText(
+  socketPath,
+  tabId,
+  needle,
+  parsedOrSession = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS
+) {
+  return await waitForCondition(
+    async () => {
+      const text = await evaluateValueInTab(
+        socketPath,
+        tabId,
+        "document.body ? document.body.innerText : ''",
+        parsedOrSession,
+        timeoutMs
+      );
+      return {
+        matched: typeof text === "string" && text.includes(needle),
+        value: text
+      };
+    },
+    {
+      timeoutMs,
+      description: `text containing ${needle}`
+    }
+  );
+}
+
+export async function waitForSelector(
+  socketPath,
+  tabId,
+  selector,
+  parsedOrSession = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS
+) {
+  return await waitForCondition(
+    async () => {
+      const result = await evaluateValueInTab(
+        socketPath,
+        tabId,
+        `
+          (() => {
+            const el = document.querySelector(${JSON.stringify(selector)});
+            if (!el) return { found: false, visible: false };
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            const visible = !!(
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== "hidden" &&
+              style.display !== "none"
+            );
+            return { found: true, visible };
+          })()
+        `,
+        parsedOrSession,
+        timeoutMs
+      );
+      return {
+        matched: Boolean(result?.found),
+        value: result
+      };
+    },
+    {
+      timeoutMs,
+      description: `selector ${selector}`
+    }
+  );
+}
+
+export async function snapshotTab(
+  socketPath,
+  tabId,
+  parsedOrSession = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS
+) {
+  return await evaluateValueInTab(
+    socketPath,
+    tabId,
+    `
+      (() => {
+        const limit = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
+        const cssEscape = (value) => {
+          if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+            return CSS.escape(value);
+          }
+          return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\\\$&");
+        };
+        const selectorFor = (el) => {
+          if (!el || !el.tagName) return null;
+          if (el.id) return "#" + cssEscape(el.id);
+          if (el.getAttribute("data-testid")) {
+            return '[data-testid="' + String(el.getAttribute("data-testid")).replace(/"/g, '\\\\"') + '"]';
+          }
+          if (el.getAttribute("name")) {
+            return el.tagName.toLowerCase() + '[name="' + String(el.getAttribute("name")).replace(/"/g, '\\\\"') + '"]';
+          }
+          const classes = Array.from(el.classList || []).slice(0, 3).map((name) => "." + cssEscape(name)).join("");
+          return el.tagName.toLowerCase() + classes;
+        };
+        const isVisible = (el) => {
+          if (!el || typeof el.getBoundingClientRect !== "function") return false;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return !!(
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none"
+          );
+        };
+        const summarize = (el) => ({
+          selector: selectorFor(el),
+          type: (() => {
+            const tag = el.tagName.toLowerCase();
+            if (tag === "input") return "input";
+            if (tag === "textarea") return "textarea";
+            if (tag === "select") return "select";
+            if (tag === "button") return "button";
+            if (tag === "a") return "link";
+            return "other";
+          })(),
+          label: el.getAttribute("aria-label") || el.labels?.[0]?.innerText || null,
+          text: limit((el.innerText || el.value || "").trim(), 200) || null,
+          visible: isVisible(el)
+        });
+        const candidates = Array.from(document.querySelectorAll("input, textarea, select, button, a"))
+          .filter(isVisible)
+          .slice(0, 40);
+        return {
+          title: document.title,
+          url: window.location.href,
+          readyState: document.readyState,
+          textExcerpt: limit(document.body ? document.body.innerText : "", 6000),
+          forms: candidates.map(summarize),
+          candidateTargets: candidates
+            .map((el) => ({
+              selector: selectorFor(el),
+              reason: limit((el.innerText || el.getAttribute("aria-label") || el.getAttribute("name") || el.tagName).trim(), 120)
+            }))
+            .filter((item) => !!item.selector)
+        };
+      })()
+    `,
+    parsedOrSession,
+    timeoutMs
+  );
+}
+
+export async function finalizeClaimedTab(
+  socketPath,
+  tabId,
+  disposition = "handoff",
+  parsedOrSession = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS
+) {
+  try {
+    await detachTab(socketPath, tabId, parsedOrSession, timeoutMs);
+    return {
+      status: "released",
+      disposition,
+      tabId,
+      closed: false,
+      detached: true
+    };
+  } catch {
+    return {
+      status: "released",
+      disposition,
+      tabId,
+      closed: false,
+      detached: false
+    };
+  }
 }
 
 export async function rpc(socketPath, method, params, timeoutMs) {
@@ -430,6 +665,16 @@ export async function readChromeLocalProfiles() {
 }
 
 export function getAllowedChromeProfileName() {
+  const globalOverride = globalThis.BROWSER_USE_SOCKET_ALLOWED_CHROME_PROFILE;
+  if (typeof globalOverride === "string" && globalOverride.trim().length > 0) {
+    return globalOverride.trim();
+  }
+
+  const nodeReplOverride = globalThis.nodeRepl?.env?.BROWSER_USE_SOCKET_ALLOWED_CHROME_PROFILE;
+  if (typeof nodeReplOverride === "string" && nodeReplOverride.trim().length > 0) {
+    return nodeReplOverride.trim();
+  }
+
   const envValue = typeof process !== "undefined"
     ? process.env.BROWSER_USE_SOCKET_ALLOWED_CHROME_PROFILE
     : undefined;
@@ -473,6 +718,44 @@ function encodeFrame(message) {
   const header = Buffer.alloc(4);
   header.writeUInt32LE(payload.length, 0);
   return Buffer.concat([header, payload]);
+}
+
+function unwrapEvaluationResult(raw) {
+  const result = raw?.result;
+  if (result && Object.prototype.hasOwnProperty.call(result, "value")) {
+    return result.value;
+  }
+  if (result && result.type === "undefined") {
+    return undefined;
+  }
+  return result ?? raw;
+}
+
+async function waitForCondition(check, { timeoutMs, description, intervalMs = 250 }) {
+  const started = Date.now();
+  let lastValue = null;
+  while (Date.now() - started < timeoutMs) {
+    const current = await check();
+    lastValue = current?.value ?? null;
+    if (current?.matched) {
+      return {
+        ok: true,
+        description,
+        value: lastValue
+      };
+    }
+    await sleep(intervalMs);
+  }
+  return {
+    ok: false,
+    description,
+    error: "timeout",
+    value: lastValue
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function tryDecodeFirstFrame(buffer) {
