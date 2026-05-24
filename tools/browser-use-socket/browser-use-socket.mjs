@@ -33,6 +33,12 @@ async function main() {
     case "list-tabs":
       await runListTabs(parsed);
       return;
+    case "claim-tab":
+      await runClaimTab(parsed);
+      return;
+    case "inspect-tab":
+      await runInspectTab(parsed);
+      return;
     case "rpc":
       await runRpc(parsed);
       return;
@@ -56,7 +62,10 @@ function parseArgs(argv) {
     params: "{}",
     sessionId: null,
     turnId: null,
-    timeoutMs: DEFAULT_TIMEOUT_MS
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    urlContains: null,
+    titleContains: null,
+    tabId: null
   };
 
   for (let i = 1; i < argv.length; i += 1) {
@@ -105,6 +114,21 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--url-contains") {
+      out.urlContains = requireValue(arg, next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--title-contains") {
+      out.titleContains = requireValue(arg, next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--tab-id") {
+      out.tabId = requireValue(arg, next);
+      i += 1;
+      continue;
+    }
     if (arg === "--help" || arg === "-h") {
       out.subcommand = "help";
       continue;
@@ -141,6 +165,41 @@ async function runListTabs(parsed) {
   const params = withSessionMeta({}, parsed);
   const result = await rpc(socketPath, "getUserTabs", params, parsed.timeoutMs);
   emit(parsed, { socket: socketPath, browser: parsed.browser, tabs: result });
+}
+
+async function runClaimTab(parsed) {
+  const { getBrowser } = await import("./compat.mjs");
+  const browser = await getBrowser({
+    backend: parsed.browser,
+    timeoutMs: parsed.timeoutMs,
+    sessionMeta: withSessionMeta({}, parsed),
+    socketPath: parsed.socket ?? undefined
+  });
+  const claim = await browser.user.claimTab(matcherFromParsed(parsed));
+  emit(parsed, {
+    socket: browser.socketPath,
+    selected: claim.selected,
+    claimed: claim.tab.info
+  });
+}
+
+async function runInspectTab(parsed) {
+  const { getBrowser } = await import("./compat.mjs");
+  const browser = await getBrowser({
+    backend: parsed.browser,
+    timeoutMs: parsed.timeoutMs,
+    sessionMeta: withSessionMeta({}, parsed),
+    socketPath: parsed.socket ?? undefined
+  });
+  const claim = await browser.user.claimTab(matcherFromParsed(parsed));
+  await claim.tab.attach();
+  const snapshot = await claim.tab.inspect();
+  emit(parsed, {
+    socket: browser.socketPath,
+    selected: claim.selected,
+    claimed: claim.tab.info,
+    snapshot
+  });
 }
 
 async function runRpc(parsed) {
@@ -781,6 +840,13 @@ export function withSessionMeta(params, parsed) {
   };
 }
 
+export function createSessionMeta(sessionId = generatedSessionId(), turnId = generatedTurnId()) {
+  return {
+    session_id: sessionId,
+    turn_id: turnId
+  };
+}
+
 function normalizeSessionMeta(parsedOrSession) {
   if (parsedOrSession.session_id && parsedOrSession.turn_id) {
     return parsedOrSession;
@@ -807,6 +873,14 @@ function parseJsonObject(raw, flag) {
     throw new Error(`${flag} must decode to a JSON object`);
   }
   return value;
+}
+
+function matcherFromParsed(parsed) {
+  return {
+    tabId: parsed.tabId,
+    titleContains: parsed.titleContains,
+    urlContains: parsed.urlContains
+  };
 }
 
 function emit(parsed, value) {
@@ -883,6 +957,8 @@ function printHelp() {
       "  list-sockets",
       "  probe-sockets",
       "  list-tabs",
+      "  claim-tab",
+      "  inspect-tab",
       "  rpc --method <name>",
       "",
       "Common options:",
@@ -891,7 +967,10 @@ function printHelp() {
       "  --browser <extension|iab|cdp>",
       "  --session-id <value>",
       "  --turn-id <value>",
-      "  --timeout-ms <n>"
+      "  --timeout-ms <n>",
+      "  --url-contains <text>",
+      "  --title-contains <text>",
+      "  --tab-id <id>"
     ].join("\n") + "\n"
   );
 }
