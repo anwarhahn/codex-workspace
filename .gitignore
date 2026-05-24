@@ -1,0 +1,61 @@
+# macOS and editor noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Root-local scratch state
+/tmp/
+
+# Private Codex runtime home
+/.codex/*
+!/.codex/AGENTS.md
+!/.codex/memories/
+/.codex/memories/*
+!/.codex/memories/AGENTS.md
+
+# Session evidence and scratch output
+/sessions/*
+!/sessions/AGENTS.md
+
+# Local secrets and auth material
+/shared/secrets/*
+!/shared/secrets/AGENTS.md
+
+# Shared generated toolchains and caches
+/shared/toolchains/*
+!/shared/toolchains/AGENTS.md
+!/shared/toolchains/README.md
+!/shared/toolchains/recipes/
+!/shared/toolchains/recipes/**
+!/shared/toolchains/scripts/
+!/shared/toolchains/scripts/**
+
+# Local tool usage telemetry
+/shared/tool-usage/
+
+# Common generated or sensitive files
+*.env
+*.local
+*.secret
+*.secrets
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.log
+*.pid
+*.tmp
+
+# Dependency and build outputs
+node_modules/
+.venv/
+venv/
+dist/
+build/
+coverage/
