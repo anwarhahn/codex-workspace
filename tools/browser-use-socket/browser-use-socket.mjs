@@ -39,6 +39,9 @@ async function main() {
     case "inspect-tab":
       await runInspectTab(parsed);
       return;
+    case "run-task":
+      await runTaskCommand(parsed);
+      return;
     case "rpc":
       await runRpc(parsed);
       return;
@@ -54,7 +57,7 @@ async function main() {
 
 function parseArgs(argv) {
   const out = {
-    subcommand: argv[0],
+    subcommand: argv[0] === "--help" || argv[0] === "-h" ? "help" : argv[0],
     json: false,
     socket: null,
     browser: "extension",
@@ -65,7 +68,11 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     urlContains: null,
     titleContains: null,
-    tabId: null
+    tabId: null,
+    task: null,
+    actionJson: null,
+    stepIndex: 0,
+    maxSteps: 12
   };
 
   for (let i = 1; i < argv.length; i += 1) {
@@ -126,6 +133,26 @@ function parseArgs(argv) {
     }
     if (arg === "--tab-id") {
       out.tabId = requireValue(arg, next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--task") {
+      out.task = requireValue(arg, next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--action-json") {
+      out.actionJson = requireValue(arg, next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--step-index") {
+      out.stepIndex = Number(requireValue(arg, next));
+      i += 1;
+      continue;
+    }
+    if (arg === "--max-steps") {
+      out.maxSteps = Number(requireValue(arg, next));
       i += 1;
       continue;
     }
@@ -202,6 +229,28 @@ async function runInspectTab(parsed) {
   });
 }
 
+async function runTaskCommand(parsed) {
+  if (!parsed.task) {
+    throw new Error("run-task requires --task");
+  }
+  if (!parsed.actionJson) {
+    throw new Error("run-task requires --action-json");
+  }
+  const { runTaskStep } = await import("./runner.mjs");
+  const result = await runTaskStep({
+    backend: parsed.browser,
+    socketPath: parsed.socket ?? undefined,
+    sessionMeta: withSessionMeta({}, parsed),
+    matcher: matcherFromParsed(parsed),
+    task: parsed.task,
+    action: parseJsonObject(parsed.actionJson, "--action-json"),
+    stepIndex: parsed.stepIndex,
+    maxSteps: parsed.maxSteps,
+    timeoutMs: parsed.timeoutMs
+  });
+  emit(parsed, result);
+}
+
 async function runRpc(parsed) {
   if (!parsed.method) {
     throw new Error("rpc requires --method");
@@ -273,31 +322,46 @@ export async function listUserTabs(socketPath, parsedOrSession = {}, timeoutMs =
   return await rpc(socketPath, "getUserTabs", params, timeoutMs);
 }
 
-export function findUserTab(tabs, matcher = {}) {
+export async function listClaimedTabs(socketPath, parsedOrSession = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  await assertSocketAllowed(socketPath, timeoutMs);
+  const params = normalizeSessionMeta(parsedOrSession);
+  return await rpc(socketPath, "getTabs", params, timeoutMs);
+}
+
+export function findMatchingUserTabs(tabs, matcher = {}) {
   if (matcher.tabId !== undefined && matcher.tabId !== null) {
-    return tabs.find((tab) => String(tab.id) === String(matcher.tabId)) ?? null;
+    return tabs.filter((tab) => String(tab.id) === String(matcher.tabId));
   }
 
   const titleContains = matcher.titleContains?.toLowerCase();
   const urlContains = matcher.urlContains?.toLowerCase();
 
-  return tabs.find((tab) => {
+  return tabs.filter((tab) => {
     const title = String(tab.title ?? "").toLowerCase();
     const url = String(tab.url ?? "").toLowerCase();
     if (titleContains && !title.includes(titleContains)) return false;
     if (urlContains && !url.includes(urlContains)) return false;
     return Boolean(titleContains || urlContains);
-  }) ?? null;
+  });
+}
+
+export function findUserTab(tabs, matcher = {}) {
+  const matches = findMatchingUserTabs(tabs, matcher);
+  return matches.length > 0 ? matches[0] : null;
 }
 
 export async function claimUserTab(socketPath, matcher = {}, parsedOrSession = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   await assertSocketAllowed(socketPath, timeoutMs);
   const params = normalizeSessionMeta(parsedOrSession);
   const tabs = await listUserTabs(socketPath, params, timeoutMs);
-  const selected = findUserTab(tabs, matcher);
-  if (!selected) {
+  const matches = findMatchingUserTabs(tabs, matcher);
+  if (matches.length === 0) {
     throw new Error("No matching user tab found");
   }
+  if (matches.length > 1) {
+    throw new Error(`Multiple matching user tabs found: ${matches.length}`);
+  }
+  const [selected] = matches;
   const claimed = await rpc(
     socketPath,
     "claimUserTab",
@@ -959,6 +1023,7 @@ function printHelp() {
       "  list-tabs",
       "  claim-tab",
       "  inspect-tab",
+      "  run-task",
       "  rpc --method <name>",
       "",
       "Common options:",
@@ -970,7 +1035,13 @@ function printHelp() {
       "  --timeout-ms <n>",
       "  --url-contains <text>",
       "  --title-contains <text>",
-      "  --tab-id <id>"
+      "  --tab-id <id>",
+      "",
+      "Run-task options:",
+      "  --task <text>",
+      "  --action-json <json>",
+      "  --step-index <n>",
+      "  --max-steps <n>"
     ].join("\n") + "\n"
   );
 }

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BrowserUseSocketAction",
+  "type": "object",
+  "required": ["action", "args", "reason", "expect"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "find_tab",
+        "claim_tab",
+        "inspect",
+        "click",
+        "fill",
+        "navigate",
+        "evaluate",
+        "wait_for_text",
+        "wait_for_url",
+        "wait_for_selector",
+        "stop"
+      ]
+    },
+    "args": {
+      "type": "object"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expect": {
+      "type": "string",
+      "minLength": 1
+    },
+    "confirmed": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}

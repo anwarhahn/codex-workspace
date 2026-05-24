@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BrowserUseSocketObservation",
+  "type": "object",
+  "required": ["task", "step_index", "max_steps", "browser_backend", "profile_name", "tab", "page", "last_action", "warnings"],
+  "properties": {
+    "task": { "type": "string" },
+    "step_index": { "type": "integer" },
+    "max_steps": { "type": "integer" },
+    "browser_backend": { "type": "string" },
+    "profile_name": { "type": "string" },
+    "tab": {
+      "type": "object",
+      "required": ["id", "title", "url"],
+      "properties": {
+        "id": {},
+        "title": { "type": "string" },
+        "url": { "type": "string" }
+      }
+    },
+    "page": {
+      "type": "object",
+      "required": ["title", "url", "ready_state", "text_excerpt", "forms", "candidate_targets"],
+      "properties": {
+        "title": { "type": "string" },
+        "url": { "type": "string" },
+        "ready_state": { "type": "string" },
+        "text_excerpt": { "type": "string" },
+        "forms": { "type": "array" },
+        "candidate_targets": { "type": "array" }
+      }
+    },
+    "last_action": { "type": "object" },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

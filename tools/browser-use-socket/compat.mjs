@@ -7,6 +7,8 @@ import {
   evaluateValueInTab,
   fillSelector,
   finalizeClaimedTab,
+  findMatchingUserTabs,
+  listClaimedTabs,
   listUserTabs,
   navigateClaimedTab,
   selectSocket,
@@ -30,6 +32,24 @@ export async function getBrowser(options = {}) {
     user: {
       openTabs: async () => await listUserTabs(socketPath, sessionMeta, timeoutMs),
       claimTab: async (matcher) => {
+        const claimedTabs = await listClaimedTabs(socketPath, sessionMeta, timeoutMs);
+        const existingMatches = findMatchingUserTabs(claimedTabs, matcher);
+        if (existingMatches.length > 1) {
+          throw new Error(`Multiple matching claimed tabs found: ${existingMatches.length}`);
+        }
+        const existing = existingMatches[0] ?? null;
+        if (existing) {
+          return {
+            selected: existing,
+            tab: createClaimedTab({
+              socketPath,
+              timeoutMs,
+              sessionMeta,
+              info: existing
+            }),
+            reused: true
+          };
+        }
         const claim = await claimUserTab(socketPath, matcher, sessionMeta, timeoutMs);
         return {
           selected: claim.selected,
@@ -38,7 +58,8 @@ export async function getBrowser(options = {}) {
             timeoutMs,
             sessionMeta,
             info: claim.claimed
-          })
+          }),
+          reused: false
         };
       }
     }
