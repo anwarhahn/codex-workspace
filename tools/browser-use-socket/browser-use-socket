@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+JS_ENTRY="$SCRIPT_DIR/browser-use-socket.mjs"
+
+if command -v node >/dev/null 2>&1; then
+  exec node "$JS_ENTRY" "$@"
+fi
+
+APP_NODE="/Applications/Codex.app/Contents/Resources/node"
+
+if [ -x "$APP_NODE" ]; then
+  exec "$APP_NODE" "$JS_ENTRY" "$@"
+fi
+
+echo "browser-use-socket: could not find a working Node runtime" >&2
+echo "Tried: node on PATH, then $APP_NODE" >&2
+exit 127

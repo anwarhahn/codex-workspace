@@ -52,6 +52,25 @@ is not primarily about repository structure.
 - If a note only matters for one investigation or one run, keep it in
   `sessions/` or convert it into a redacted durable artifact elsewhere.
 
+## Verified Environment Notes
+
+- Node runtime discovery for Codex plugin diagnostics was verified on
+  2026-05-24.
+- A future session should not assume `node` is available on shell `PATH`.
+- If `node --version` fails, use the app-bundled runtime at:
+  `/Applications/Codex.app/Contents/Resources/node`
+- The bundled `node_repl` host used by this workspace also points at that
+  app-bundled Node runtime.
+- For browser-plugin scripts and other Codex-bundled helper scripts, prefer the
+  app-bundled Node path over a system or Homebrew Node installation to reduce
+  environment drift.
+
+Example:
+
+```sh
+/Applications/Codex.app/Contents/Resources/node /absolute/path/to/script.js
+```
+
 ## Safety
 
 - Do not promote raw sensitive evidence into durable guidance.
