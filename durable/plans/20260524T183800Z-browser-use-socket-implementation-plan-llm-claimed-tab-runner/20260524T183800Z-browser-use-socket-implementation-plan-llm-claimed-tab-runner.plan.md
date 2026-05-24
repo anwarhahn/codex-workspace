@@ -1,53 +1,45 @@
 # LLM Claimed-Tab Runner Plan
 
+## Status
+
+Implemented on 2026-05-24 for the generic claimed-tab runner scope.
+
+Deferred on purpose:
+
+- site-specific adapters, including Airbnb-specific workflow commands
+- internal model invocation from the tool itself
+
+This plan is now a durable execution and handoff record for the implemented
+generic runner that future Codex sessions should use directly.
+
 ## Purpose
 
-Build a reusable Codex-local browser runner on top of
+Provide a reusable Codex-local browser runner on top of
 `tools/browser-use-socket/` that can operate inside a manually signed-in Chrome
 tab when the official Browser plugin path is unavailable in a CLI session.
 
-The target outcome is a workflow where a future session can take a user prompt
-such as:
+The implementation mirrors the in-app browser workflow as closely as practical
+without relying on the privileged `nodeRepl.nativePipe` bridge:
 
-`add these 3 emails to the airbnb reservation: email1, email2, email3`
-
-and then:
-
-- find the correct signed-in Chrome tab
-- claim it
-- inspect current page state
-- ask an LLM for the next browser action(s)
-- execute those actions through the direct socket transport
-- verify progress after each step
-- stop on success, uncertainty, or guardrail triggers
+- discover a backend socket
+- list user tabs
+- claim a user tab
+- attach to the claimed tab
+- inspect page state
+- execute constrained actions
+- rebuild observation after each step
+- finalize the claimed tab without closing the underlying user tab
 
 ## Success Criteria
 
-- A future session can use a documented tool path under `tools/` to claim a
-  manually signed-in Chrome tab and execute page actions without relying on
-  `agent.browsers.*`.
-- The tool exposes a stable action API for at least:
-  - list or select user tabs
-  - claim a user tab
-  - evaluate JavaScript in the claimed tab
-  - click elements
-  - fill fields
-  - navigate a claimed tab
-  - wait for observable page state changes
-- The tool includes an LLM decision loop that consumes sanitized page state and
-  emits structured next actions.
-- The runner includes guardrails for high-risk actions, unclear page state, and
-  mismatched tabs.
-- The first narrow workflow target is a manually signed-in web app tab such as
-  Airbnb reservation management.
-- The runner limits Chrome extension-backed execution to the Chrome profile
-  named `Codex` unless a future session explicitly overrides that requirement.
+The implemented scope is successful when a future Codex session can:
 
-## Scope
-
-- Scope: `browser-use-socket`
-- Work ID: `implementation-plan`
-- Slug: `llm-claimed-tab-runner`
+- claim a manually signed-in Chrome tab in the `Codex` Chrome profile
+- inspect the current page through a sanitized observation
+- choose one structured action JSON object in the Codex session
+- execute that action through the local direct-socket runner
+- repeat with the same `session_id` and `turn_id`
+- stop on block, ambiguity, or confirmation requirement
 
 ## Working Context
 
@@ -55,249 +47,377 @@ and then:
   `/Users/anwarhahn/dev/codex-workspace`
 - Primary tool directory:
   `tools/browser-use-socket/`
-- Relevant durable note:
-  `durable/operations/AGENTS.md`
 - Relevant session evidence:
   `sessions/20260524T180655Z-browser-backend-investigation/`
 
-## Mutation Model
+Read before making further changes:
 
-- This work may edit local Codex tooling under `tools/`.
-- This work should not modify product repositories outside this workspace.
-- External browser state may be mutated only during explicit interactive use of
-  the runner, not while building the tool itself.
-- Future execution of the finished runner will interact with signed-in browser
-  tabs and may mutate third-party web apps, so guardrails are required.
-
-## Required Guidance To Read Before Execution
-
-- Root `AGENTS.md`
+- root `AGENTS.md`
 - `tools/AGENTS.md`
 - `tools/browser-use-socket/AGENTS.md`
 - `durable/operations/AGENTS.md`
 
 ## Known Facts
 
-- Verified on 2026-05-24: CLI rollouts may have valid turn metadata but still
-  lack the privileged `nodeRepl.nativePipe` bridge required by the official
-  browser client.
+- Verified on 2026-05-24: this CLI environment can lack
+  `nodeRepl.nativePipe` even when live browser sockets exist.
 - Verified on 2026-05-24: live Browser Use sockets can still exist under
   `/tmp/codex-browser-use`.
 - Verified on 2026-05-24: the direct socket path can discover the Chrome
-  extension backend, list user tabs, claim a user tab, attach to it, and send
-  selected CDP commands such as `Runtime.evaluate` and `Page.getNavigationHistory`.
+  extension backend, list user tabs, claim a user tab, attach to it, and run
+  selected CDP commands.
 - Verified on 2026-05-24: direct backend RPC was most reliable from the Codex
   `node_repl` context rather than plain shell Node execution.
-- Verified on 2026-05-24: the local Chrome profile named `Codex` corresponds to
-  profile directory `Profile 1` and was the active `last_used` profile in
-  Chrome `Local State`.
+- Verified on 2026-05-24: Chrome extension-backed execution is intentionally
+  restricted to the Chrome profile named `Codex` by default.
 
-## Assumptions
+## Implemented File Inventory
 
-- Future sessions can access `node_repl` and import local ESM modules from the
-  workspace.
-- The direct socket transport remains stable enough for local fallback use.
-- The user is willing to manually sign in to the target site and place the
-  desired tab in a usable state before the runner acts.
+```text
+tools/browser-use-socket/
+  AGENTS.md
+  CHANGE_REQUESTS.md
+  README.md
+  browser-use-socket
+  browser-use-socket.mjs
+  compat.mjs
+  runner.mjs
+  prompts/
+    system-prompt.md
+    action-contract.md
+  schemas/
+    action-schema.json
+    observation-schema.json
+```
 
-## Constraints
+## Implemented Command Surface
 
-- Do not capture or persist cookies, passwords, local storage dumps, or other
-  secret browser state.
-- Do not store raw sensitive browser outputs in durable artifacts.
-- Keep usage logs sanitized.
-- Avoid site-specific overfitting in the core runner. Site-specific workflows
-  should be layered above the generic claimed-tab action loop.
-- Chrome extension-backed actions must default to the `Codex` Chrome profile
-  only.
+The wrapper command is:
+
+```sh
+tools/browser-use-socket/browser-use-socket <subcommand> [options]
+```
+
+Implemented subcommands:
+
+- `list-sockets`
+- `probe-sockets`
+- `list-tabs`
+- `claim-tab`
+- `inspect-tab`
+- `run-task`
+- `rpc`
+
+Explicitly not implemented in this scope:
+
+- `run-airbnb-add-guests`
+- any other site-specific adapter command
+
+## Implemented Module Surface
+
+`browser-use-socket.mjs` exports the low-level transport and claimed-tab
+helpers:
+
+```js
+listSockets()
+probeSocket(socketPath, timeoutMs)
+selectSocket(browserType, timeoutMs)
+readChromeLocalProfiles()
+getActiveChromeProfile()
+getAllowedChromeProfileName()
+assertAllowedChromeProfileContext()
+assertSocketAllowed(socketPath, timeoutMs)
+listUserTabs(socketPath, sessionMeta, timeoutMs)
+listClaimedTabs(socketPath, sessionMeta, timeoutMs)
+findMatchingUserTabs(tabs, matcher)
+findUserTab(tabs, matcher)
+claimUserTab(socketPath, matcher, sessionMeta, timeoutMs)
+attachTab(socketPath, tabId, sessionMeta, timeoutMs)
+detachTab(socketPath, tabId, sessionMeta, timeoutMs)
+cdpCommand(socketPath, tabId, method, commandParams, sessionMeta, timeoutMs)
+evaluateInTab(socketPath, tabId, expression, sessionMeta, timeoutMs)
+evaluateValueInTab(socketPath, tabId, expression, sessionMeta, timeoutMs)
+clickSelector(socketPath, tabId, selector, sessionMeta, timeoutMs)
+fillSelector(socketPath, tabId, selector, value, sessionMeta, timeoutMs)
+navigateClaimedTab(socketPath, tabId, url, sessionMeta, timeoutMs)
+waitForUrlContains(socketPath, tabId, needle, sessionMeta, timeoutMs)
+waitForText(socketPath, tabId, needle, sessionMeta, timeoutMs)
+waitForSelector(socketPath, tabId, selector, sessionMeta, timeoutMs)
+snapshotTab(socketPath, tabId, sessionMeta, timeoutMs)
+finalizeClaimedTab(socketPath, tabId, disposition, sessionMeta, timeoutMs)
+rpc(socketPath, method, params, timeoutMs)
+withProbeSessionMeta(params)
+withSessionMeta(params, parsed)
+createSessionMeta(sessionId, turnId)
+```
+
+`compat.mjs` exposes a browser-like compatibility layer:
+
+```js
+getBrowser(options)
+claimTab(options)
+inspectClaimedTab(options)
+runAction(options)
+runActions(options)
+```
+
+The claimed-tab object supports:
+
+- `attach()`
+- `inspect()`
+- `evaluate({ expression })`
+- `click({ selector })`
+- `fill({ selector, value })`
+- `navigate({ url })`
+- `waitForText({ text, timeoutMs })`
+- `waitForUrl({ text, timeoutMs })`
+- `waitForSelector({ selector, timeoutMs })`
+- `cdp({ method, commandParams, timeoutMs })`
+- `finalize({ status, timeoutMs })`
+
+`runner.mjs` exposes the Codex-session step runner:
+
+```js
+createRunner(options)
+buildObservation(options)
+validateAction(action)
+executeAction(options)
+runTaskStep(options)
+```
+
+## Observation Contract
+
+`runTaskStep(...)` builds and returns this observation shape:
+
+```json
+{
+  "task": "string",
+  "step_index": 0,
+  "max_steps": 12,
+  "browser_backend": "extension",
+  "profile_name": "Codex",
+  "tab": {
+    "id": "string | number",
+    "title": "string",
+    "url": "string"
+  },
+  "page": {
+    "title": "string",
+    "url": "string",
+    "ready_state": "string",
+    "text_excerpt": "string",
+    "forms": [],
+    "candidate_targets": []
+  },
+  "last_action": {
+    "type": "string | null",
+    "input": {},
+    "result_summary": "string | null",
+    "error": "string | null"
+  },
+  "warnings": []
+}
+```
+
+Notes:
+
+- `text_excerpt` is intentionally capped and sanitized.
+- `forms` and `candidate_targets` are derived from visible interactive
+  elements, not from a full DOM dump.
+- the internal claimed-tab handle is removed from the returned observation.
+
+## Action Contract
+
+The Codex session must supply exactly one action object per step. The accepted
+action names are:
+
+- `find_tab`
+- `claim_tab`
+- `inspect`
+- `click`
+- `fill`
+- `navigate`
+- `evaluate`
+- `wait_for_text`
+- `wait_for_url`
+- `wait_for_selector`
+- `stop`
+
+The action object shape is:
+
+```json
+{
+  "action": "inspect",
+  "args": {},
+  "reason": "string",
+  "expect": "string",
+  "confirmed": false
+}
+```
+
+`schemas/action-schema.json` and `prompts/action-contract.md` are the durable
+artifacts that future sessions should reuse instead of restating the contract.
+
+## Guardrails
+
+Risky actions are blocked unless `confirmed: true`.
+
+Current risky classifications:
+
+- `click` selectors or candidate reasons that suggest:
+  - submit
+  - save
+  - confirm
+  - remove
+  - delete
+  - pay
+  - book
+  - send
+- `evaluate` expressions that appear to mutate page state directly, such as:
+  - `.click(`
+  - `dispatchEvent`
+  - `.submit(`
+  - `window.location`
+
+When blocked, the runner returns:
+
+```json
+{
+  "status": "needs_confirmation",
+  "message": "Confirmation required before executing risky action: click",
+  "proposed_action": {}
+}
+```
+
+## Matching Rules
+
+The matcher shape is:
+
+```json
+{
+  "tabId": null,
+  "titleContains": null,
+  "urlContains": null
+}
+```
+
+Implemented behavior:
+
+- if `tabId` is present, it takes precedence
+- otherwise all non-null text predicates must match case-insensitively
+- a required single-tab operation fails if zero matches are found
+- a required single-tab operation fails if multiple matches are found
+
+This ambiguity check is important. The implementation no longer silently takes
+the first fuzzy match.
+
+## Finalize Semantics
+
+`finalizeClaimedTab(...)` and `claimedTab.finalize(...)` are best-effort detach
+operations.
+
+Implemented behavior:
+
+- detach the claimed tab from the current session when possible
+- never close the underlying user tab by default
+- return a structured result with:
+  - `status`
+  - `disposition`
+  - `tabId`
+  - `closed`
+  - `detached`
+
+## How Future Codex Sessions Should Use It
+
+Preferred path: use the tool inside a Codex session that has `node_repl`
+available.
+
+Typical loop:
+
+1. Open or manually prepare the desired signed-in tab in the `Codex` Chrome
+   profile.
+2. Choose stable session metadata and keep reusing it:
+
+```js
+const sessionMeta = {
+  session_id: "my-browser-task",
+  turn_id: "step-1"
+};
+```
+
+3. Import the runner:
+
+```js
+const runner = await import("/Users/anwarhahn/dev/codex-workspace/tools/browser-use-socket/runner.mjs");
+```
+
+4. Run an initial inspect step:
+
+```js
+const step1 = await runner.runTaskStep({
+  backend: "extension",
+  sessionMeta,
+  matcher: { urlContains: "example.com" },
+  task: "complete the current web task",
+  action: {
+    action: "inspect",
+    args: {},
+    reason: "capture current page state",
+    expect: "sanitized snapshot",
+    confirmed: false
+  },
+  stepIndex: 1,
+  maxSteps: 12,
+  timeoutMs: 2000
+});
+```
+
+5. Read `step1.observation`.
+6. Use the current Codex session model to choose the next action JSON object.
+7. Call `runTaskStep(...)` again with the same `session_id` and `turn_id` if
+   you want to reuse the same claimed tab.
+8. Stop when the task is complete, the page is ambiguous, or the runner
+   returns `needs_confirmation`.
+
+Shell wrapper form:
+
+```sh
+tools/browser-use-socket/browser-use-socket run-task \
+  --browser extension \
+  --session-id my-browser-task \
+  --turn-id shared-turn \
+  --url-contains example.com \
+  --task "complete the current web task" \
+  --action-json '{"action":"inspect","args":{},"reason":"capture current page state","expect":"sanitized snapshot","confirmed":false}' \
+  --json
+```
+
+## Validation Completed
+
+Verified on 2026-05-24:
+
+- the wrapper `--help` output includes the generic runner surface
+- the modules import successfully from Codex `node_repl`
+- `runTaskStep(...)` executes an `inspect` action successfully against a
+  claimed Chrome extension tab
+- risky actions return `needs_confirmation` with a proposed action payload
+- already-claimed tabs for the same session are reused instead of causing a
+  second claim failure
+
+## Remaining Optional Work
+
+These are future enhancements, not blockers for the implemented generic scope:
+
+- add more precise action-argument validation
+- add richer page snapshots when needed
+- add optional higher-level helper examples under `tools/browser-use-socket/`
+- add site-specific adapters in separate follow-up work if the user explicitly
+  requests them
 
 ## Non-Goals
 
-- Replacing the official Browser plugin path when it is already available.
-- Building a general-purpose visual browser agent from scratch.
-- Bypassing site security, account controls, approvals, or anti-abuse flows.
-- Hardcoding every possible Airbnb workflow variant in the first pass.
-
-## Implementation Sequence
-
-### Phase 1: Finish The Generic Claimed-Tab Action Layer
-
-1. Extend `tools/browser-use-socket/browser-use-socket.mjs` so the exported
-   helpers cover the full claimed-tab lifecycle:
-   - select socket
-   - enforce the allowed Chrome profile for extension-backed operations
-   - list user tabs
-   - match a user tab by title or URL fragment
-   - claim the user tab
-   - attach to the claimed tab
-   - run CDP commands
-   - evaluate JavaScript
-   - click elements
-   - fill fields
-   - navigate
-   - wait for text, selector, or URL changes
-2. Normalize helper return shapes so future action executors do not need to
-   parse ad hoc CDP responses repeatedly.
-3. Add explicit timeout controls and error classes or structured errors for:
-   - no matching tab
-   - attach failure
-   - selector not found
-   - evaluation failure
-   - navigation timeout
-4. Add example snippets in the tool README for:
-   - claim tab by URL fragment
-   - evaluate page title
-   - fill a field
-   - click a button
-
-### Phase 2: Define A Stable Action Schema
-
-1. Define a small structured action model that an LLM can emit, such as:
-   - `find_tab`
-   - `claim_tab`
-   - `inspect`
-   - `evaluate`
-   - `click`
-   - `fill`
-   - `navigate`
-   - `wait_for_url`
-   - `wait_for_text`
-   - `stop`
-2. Define the corresponding observation model returned to the LLM, including:
-   - current URL
-   - current title
-   - condensed DOM facts
-   - candidate selectors
-   - recent action result
-   - warning flags
-3. Keep the action schema small and explicit so execution remains debuggable.
-
-### Phase 3: Build The LLM Decision Loop
-
-1. Create a runner module under `tools/browser-use-socket/` that:
-   - accepts a user task prompt
-   - claims a target tab
-   - captures the initial observation
-   - asks the model for the next action or short plan
-   - executes the chosen action
-   - captures the next observation
-   - repeats until success or stop
-2. Limit the loop so it can:
-   - stop after a configurable step count
-   - request confirmation before high-risk actions
-   - stop when the page looks unrelated to the target workflow
-3. Separate model prompting from transport so future sessions can improve the
-   prompt without rewriting the socket layer.
-
-### Phase 4: Add Guardrails
-
-1. Require explicit confirmation for actions with high mutation risk, such as:
-   - final submission buttons
-   - payment or account changes
-   - deleting or removing data
-2. Detect ambiguous state and stop when:
-   - multiple possible target tabs match
-   - the page appears to be logged out
-   - the page presents a CAPTCHA, MFA, or approval wall
-   - the model emits unsupported or malformed actions
-3. Ensure the runner explains why it stopped and what user intervention is
-   required next.
-
-### Phase 5: Build One Narrow Workflow Adapter
-
-1. Add a focused example adapter for a real workflow such as:
-   - Airbnb reservation guest addition
-2. The adapter should:
-   - define how to identify the target tab
-   - define success signals
-   - define known page landmarks
-   - defer generic clicking and filling to the core runner
-3. Keep the adapter narrow. It is a proving ground for the generic runner, not
-   the final architecture.
-
-### Phase 6: Documentation And Verification
-
-1. Update `tools/browser-use-socket/README.md` with:
-   - claimed-tab workflow examples
-   - LLM runner invocation examples
-   - guardrail expectations
-   - known limitations
-2. Update `tools/browser-use-socket/AGENTS.md` if new durable operating rules
-   are introduced.
-3. If user feedback arrives during development, add
-   `tools/browser-use-socket/CHANGE_REQUESTS.md`.
-
-## Verification Requirements
-
-- Verify the generic helper layer from `node_repl` against a live Chrome
-  extension backend:
-  - list sockets
-  - probe extension socket
-  - list user tabs
-  - claim a chosen tab
-  - evaluate `document.title`
-  - click or fill a harmless test element when available
-- Verify the action loop with a low-risk target page before using a production
-  workflow page.
-- Verify that guardrails trigger correctly on:
-  - no matching tab
-  - ambiguous tab match
-  - missing selector
-  - step limit exceeded
-- For any site-specific adapter, verify only against user-authorized,
-  manually signed-in tabs.
-
-## Expected Commands
-
-Examples to expect during implementation:
-
-```sh
-tools/browser-use-socket/browser-use-socket list-sockets --json
-```
-
-For `node_repl` validation:
-
-```js
-const mod = await import("/Users/anwarhahn/dev/codex-workspace/tools/browser-use-socket/browser-use-socket.mjs");
-const socket = await mod.selectSocket("extension", 1500);
-const { claimed } = await mod.claimUserTab(
-  socket,
-  { urlContains: "airbnb" },
-  {},
-  2000
-);
-await mod.attachTab(socket, claimed.id, {}, 2000);
-const title = await mod.evaluateInTab(socket, claimed.id, "document.title", {}, 2000);
-console.log(title);
-```
-
-## Abort Conditions
-
-- Abort if the direct socket transport stops working and the session cannot use
-  either the official browser client or the fallback socket path.
-- Abort if the target website presents a login, MFA, CAPTCHA, or approval flow
-  that requires user action.
-- Abort if the runner cannot distinguish the correct tab confidently.
-- Abort if the model repeatedly emits malformed actions after prompt tightening.
-
-## Rollback
-
-- Tool changes are local workspace edits only.
-- If a change degrades the tool, revert only the affected files under
-  `tools/browser-use-socket/`.
-- Do not delete usage logs or session evidence during rollback.
-
-## Evidence Handling
-
-- Write raw validation outputs, screenshots, experimental scripts, and step-by-
-  step test traces under a new `sessions/<session_id>/` directory.
-- Keep durable artifacts here limited to the plan and future redacted summaries.
-
-## Final Deliverables
-
-- Updated `tools/browser-use-socket/` implementation
-- Updated tool documentation
-- Optional `CHANGE_REQUESTS.md` if feedback accumulates
-- Session evidence under `sessions/`
-- Any final durable operational lesson under `durable/operations/` only if it
-  remains broadly useful beyond one run
+- calling a model API directly from the tool
+- bypassing browser auth or anti-abuse controls
+- dumping cookies, storage state, or other secret browser data
+- replacing the official Browser plugin path when it is available
+- introducing a separate browser abstraction unrelated to the in-app workflow
